@@ -78,3 +78,22 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ success: false, error: 'Gagal mengupdate tipe tiket' }, { status: 500, headers: corsHeaders })
   }
 }
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { id } = body
+    if (!id) {
+      return NextResponse.json({ success: false, error: 'ID tipe tiket wajib diisi' }, { status: 400, headers: corsHeaders })
+    }
+    const existing = await getOne('SELECT id FROM TicketType WHERE id = ?', [id])
+    if (!existing) {
+      return NextResponse.json({ success: false, error: 'Tipe tiket tidak ditemukan' }, { status: 404, headers: corsHeaders })
+    }
+    await query('DELETE FROM TicketType WHERE id = ?', [id])
+    return NextResponse.json({ success: true, data: { message: 'Tipe tiket berhasil dihapus' } }, { status: 200, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Delete ticket error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal menghapus tipe tiket' }, { status: 500, headers: corsHeaders })
+  }
+}

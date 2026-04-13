@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAll, query } from '@/lib/db'
+import { getAll, getOne, query } from '@/lib/db'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -38,5 +38,54 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Create location error:', error?.message)
     return NextResponse.json({ success: false, error: 'Gagal membuat lokasi' }, { status: 500, headers: corsHeaders })
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { id, name, latitude, longitude, radius } = body
+    if (!id) {
+      return NextResponse.json({ success: false, error: 'ID lokasi wajib diisi' }, { status: 400, headers: corsHeaders })
+    }
+    const existing = await getOne('SELECT id FROM OfficeLocation WHERE id = ?', [id])
+    if (!existing) {
+      return NextResponse.json({ success: false, error: 'Lokasi tidak ditemukan' }, { status: 404, headers: corsHeaders })
+    }
+    const fields: string[] = []
+    const params: unknown[] = []
+    if (name !== undefined) { fields.push('name = ?'); params.push(name) }
+    if (latitude !== undefined) { fields.push('latitude = ?'); params.push(parseFloat(latitude)) }
+    if (longitude !== undefined) { fields.push('longitude = ?'); params.push(parseFloat(longitude)) }
+    if (radius !== undefined) { fields.push('radius = ?'); params.push(parseFloat(radius)) }
+    if (fields.length === 0) {
+      return NextResponse.json({ success: false, error: 'Tidak ada field untuk diupdate' }, { status: 400, headers: corsHeaders })
+    }
+    params.push(id)
+    await query(`UPDATE OfficeLocation SET ${fields.join(', ')} WHERE id = ?`, params)
+    const location = await getOne('SELECT * FROM OfficeLocation WHERE id = ?', [id])
+    return NextResponse.json({ success: true, data: location }, { status: 200, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Update location error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal mengupdate lokasi' }, { status: 500, headers: corsHeaders })
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { id } = body
+    if (!id) {
+      return NextResponse.json({ success: false, error: 'ID lokasi wajib diisi' }, { status: 400, headers: corsHeaders })
+    }
+    const existing = await getOne('SELECT id FROM OfficeLocation WHERE id = ?', [id])
+    if (!existing) {
+      return NextResponse.json({ success: false, error: 'Lokasi tidak ditemukan' }, { status: 404, headers: corsHeaders })
+    }
+    await query('DELETE FROM OfficeLocation WHERE id = ?', [id])
+    return NextResponse.json({ success: true, data: { message: 'Lokasi berhasil dihapus' } }, { status: 200, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Delete location error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal menghapus lokasi' }, { status: 500, headers: corsHeaders })
   }
 }
