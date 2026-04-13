@@ -19,17 +19,24 @@ function getPool(): mysql.Pool {
     console.log('[DB] CA cert not found, using rejectUnauthorized: false')
   }
 
-  pool = mysql.createPool({
-    host: 'mysql-23b8d199-sitizahrah256-366a.e.aivencloud.com',
-    port: 25717,
-    user: 'avnadmin',
-    password: 'AVNS_cH993uJXj18aZK3KZj4',
-    database: 'defaultdb',
-    ssl,
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0,
-  })
+  const dbUrl = process.env.DATABASE_URL || ''
+  const urlMatch = dbUrl.match(/mysql:\/\/([^:]+):([^@]+)@([^:]+):(\d+)\/(.+)/)
+  
+  if (urlMatch) {
+    pool = mysql.createPool({
+      host: urlMatch[3],
+      port: parseInt(urlMatch[4]),
+      user: urlMatch[1],
+      password: urlMatch[2],
+      database: urlMatch[5],
+      ssl,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+    })
+  } else {
+    throw new Error('Invalid DATABASE_URL format')
+  }
 
   return pool
 }
