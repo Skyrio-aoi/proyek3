@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { getOne, getAll, query } from '@/lib/db'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -9,236 +9,155 @@ const corsHeaders = {
 
 function generateOrderCode(): string {
   const now = new Date()
-  const year = now.getFullYear()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  const random = String(Math.floor(Math.random() * 100000)).padStart(5, '0')
-  return `NPL-${year}${month}${day}-${random}`
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  const r = String(Math.floor(Math.random() * 100000)).padStart(5, '0')
+  return `NPL-${y}${m}${d}-${r}`
 }
 
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders })
 }
 
-// GET /api/orders?userId=xxx or /api/orders?action=all
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const userId = searchParams.get('userId')
     const action = searchParams.get('action')
 
-    // Admin: get all orders
     if (action === 'all') {
-      const orders = await db.order.findMany({
-        include: {
-          user: {
-            select: { id: true, name: true, email: true, phone: true },
-          },
-          orderItems: {
-            include: {
-              ticketType: true,
-            },
-          },
-        },
-        orderBy: { createdAt: 'desc' },
-      })
-
-      return NextResponse.json(
-        { success: true, data: orders },
-        { status: 200, headers: corsHeaders }
-      )
+      // Admin: get all orders with user info
+      const orders = await getAll(`
+        SELECT o.*, u.name as userName, u.email as userEmail, u.phone as userPhone
+        FROM \`Order\` o
+        LEFT JOIN User u ON o.userId = u.id
+        ORDER BY o.createdAt DESC
+      `)
+      // Get order items for each order
+      for (const order of orders) {
+        order.orderItems = await getAll(
+          'SELECT oi.*, tt.name as ticketTypeName, tt.price as ticketPrice FROM OrderItem oi LEFT JOIN TicketType tt ON oi.ticketTypeId = tt.id WHERE oi.orderId = ?',
+          [order.id]
+        )
+      }
+      return NextResponse.json({ success: true, data: orders }, { status: 200, headers: corsHeaders })
     }
 
-    // Get user's orders
     if (userId) {
-      const orders = await db.order.findMany({
-        where: { userId },
-        include: {
-          orderItems: {
-            include: {
-              ticketType: true,
-            },
-          },
-        },
-        orderBy: { createdAt: 'desc' },
-      })
-
-      return NextResponse.json(
-        { success: true, data: orders },
-        { status: 200, headers: corsHeaders }
-      )
+      const orders = await getAll('SELECT * FROM \`Order\` WHERE userId = ? ORDER BY createdAt DESC', [userId])
+      for (const order of orders) {
+        order.orderItems = await getAll(
+          'SELECT oi.*, tt.name as ticketTypeName, tt.price as ticketPrice FROM OrderItem oi LEFT JOIN TicketType tt ON oi.ticketTypeId = tt.id WHERE oi.orderId = ?',
+          [order.id]
+        )
+      }
+      return NextResponse.json({ success: true, data: orders }, { status: 200, headers: corsHeaders })
     }
 
-    return NextResponse.json(
-      { success: false, error: 'Provide userId or action=all' },
-      { status: 400, headers: corsHeaders }
-    )
-  } catch (error) {
-    console.error('Get orders error:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch orders' },
-      { status: 500, headers: corsHeaders }
-    )
+    return NextResponse.json({ success: false, error: 'Berikan userId atau action=all' }, { status: 400, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Get orders error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal mengambil data pesanan' }, { status: 500, headers: corsHeaders })
   }
 }
 
-// POST /api/orders - Create order
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { action, userId, ticketTypeId, quantity, visitDate, paymentMethod, notes } = body
 
     if (action !== 'create') {
-      return NextResponse.json(
-        { success: false, error: 'Invalid action. Use "create".' },
-        { status: 400, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Action tidak valid' }, { status: 400, headers: corsHeaders })
     }
-
     if (!userId || !ticketTypeId || !quantity || !visitDate) {
-      return NextResponse.json(
-        { success: false, error: 'userId, ticketTypeId, quantity, and visitDate are required' },
-        { status: 400, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Data tidak lengkap' }, { status: 400, headers: corsHeaders })
     }
 
-    // Verify user exists
-    const user = await db.user.findUnique({ where: { id: userId } })
+    const user = await getOne('SELECT id FROM User WHERE id = ?', [userId])
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'User not found' },
-        { status: 404, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'User tidak ditemukan' }, { status: 404, headers: corsHeaders })
     }
 
-    // Verify ticket type exists and is active
-    const ticketType = await db.ticketType.findUnique({ where: { id: ticketTypeId } })
-    if (!ticketType) {
-      return NextResponse.json(
-        { success: false, error: 'Ticket type not found' },
-        { status: 404, headers: corsHeaders }
-      )
-    }
-
-    if (!ticketType.isActive) {
-      return NextResponse.json(
-        { success: false, error: 'Ticket type is not available' },
-        { status: 400, headers: corsHeaders }
-      )
+    const ticketType = await getOne('SELECT * FROM TicketType WHERE id = ?', [ticketTypeId])
+    if (!ticketType || !ticketType.isActive) {
+      return NextResponse.json({ success: false, error: 'Tipe tiket tidak tersedia' }, { status: 404, headers: corsHeaders })
     }
 
     const qty = parseInt(quantity, 10)
-    const subtotal = ticketType.price * qty
+    const totalAmount = ticketType.price * qty
 
     // Generate unique order code
     let orderCode = generateOrderCode()
-    let codeExists = await db.order.findUnique({ where: { orderCode } })
-    while (codeExists) {
+    let exists = await getOne('SELECT id FROM \`Order\` WHERE orderCode = ?', [orderCode])
+    while (exists) {
       orderCode = generateOrderCode()
-      codeExists = await db.order.findUnique({ where: { orderCode } })
+      exists = await getOne('SELECT id FROM \`Order\` WHERE orderCode = ?', [orderCode])
     }
 
-    // Create order with order item in a transaction
-    const order = await db.order.create({
-      data: {
-        orderCode,
-        userId,
-        totalAmount: subtotal,
-        status: 'pending',
-        visitDate: new Date(visitDate),
-        paymentMethod: paymentMethod || null,
-        notes: notes || null,
-        orderItems: {
-          create: {
-            ticketTypeId,
-            quantity: qty,
-            unitPrice: ticketType.price,
-            subtotal,
-          },
-        },
-      },
-      include: {
-        orderItems: {
-          include: {
-            ticketType: true,
-          },
-        },
-      },
-    })
+    const orderId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)
+    const itemId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + 'i'
 
-    return NextResponse.json(
-      { success: true, data: order },
-      { status: 201, headers: corsHeaders }
+    await query(
+      'INSERT INTO \`Order\` (id, orderCode, userId, totalAmount, status, visitDate, paymentMethod, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [orderId, orderCode, userId, totalAmount, 'pending', visitDate, paymentMethod || null, notes || null]
     )
-  } catch (error) {
-    console.error('Create order error:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to create order' },
-      { status: 500, headers: corsHeaders }
+
+    await query(
+      'INSERT INTO OrderItem (id, orderId, ticketTypeId, quantity, unitPrice, subtotal) VALUES (?, ?, ?, ?, ?, ?)',
+      [itemId, orderId, ticketTypeId, qty, ticketType.price, totalAmount]
     )
+
+    const order = await getOne('SELECT * FROM \`Order\` WHERE id = ?', [orderId])
+    order.orderItems = await getAll(
+      'SELECT oi.*, tt.name as ticketTypeName FROM OrderItem oi LEFT JOIN TicketType tt ON oi.ticketTypeId = tt.id WHERE oi.orderId = ?',
+      [orderId]
+    )
+
+    return NextResponse.json({ success: true, data: order }, { status: 201, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Create order error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal membuat pesanan: ' + (error?.message || '') }, { status: 500, headers: corsHeaders })
   }
 }
 
-// PUT /api/orders - Update order status (admin)
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json()
     const { action, orderId, status } = body
 
     if (action !== 'updateStatus') {
-      return NextResponse.json(
-        { success: false, error: 'Invalid action. Use "updateStatus".' },
-        { status: 400, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Action tidak valid' }, { status: 400, headers: corsHeaders })
     }
-
     if (!orderId || !status) {
-      return NextResponse.json(
-        { success: false, error: 'orderId and status are required' },
-        { status: 400, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'orderId dan status wajib diisi' }, { status: 400, headers: corsHeaders })
     }
 
     const validStatuses = ['pending', 'paid', 'confirmed', 'cancelled', 'used']
     if (!validStatuses.includes(status)) {
-      return NextResponse.json(
-        { success: false, error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` },
-        { status: 400, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Status tidak valid' }, { status: 400, headers: corsHeaders })
     }
 
-    const existing = await db.order.findUnique({ where: { id: orderId } })
+    const existing = await getOne('SELECT id FROM \`Order\` WHERE id = ?', [orderId])
     if (!existing) {
-      return NextResponse.json(
-        { success: false, error: 'Order not found' },
-        { status: 404, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Pesanan tidak ditemukan' }, { status: 404, headers: corsHeaders })
     }
 
-    const order = await db.order.update({
-      where: { id: orderId },
-      data: { status },
-      include: {
-        user: {
-          select: { id: true, name: true, email: true },
-        },
-        orderItems: {
-          include: {
-            ticketType: true,
-          },
-        },
-      },
-    })
+    await query('UPDATE \`Order\` SET status = ? WHERE id = ?', [status, orderId])
+    const order = await getOne(`
+      SELECT o.*, u.name as userName, u.email as userEmail
+      FROM \`Order\` o
+      LEFT JOIN User u ON o.userId = u.id
+      WHERE o.id = ?
+    `, [orderId])
+    order.orderItems = await getAll(
+      'SELECT oi.*, tt.name as ticketTypeName FROM OrderItem oi LEFT JOIN TicketType tt ON oi.ticketTypeId = tt.id WHERE oi.orderId = ?',
+      [orderId]
+    )
 
-    return NextResponse.json(
-      { success: true, data: order },
-      { status: 200, headers: corsHeaders }
-    )
-  } catch (error) {
-    console.error('Update order error:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to update order' },
-      { status: 500, headers: corsHeaders }
-    )
+    return NextResponse.json({ success: true, data: order }, { status: 200, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Update order error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal mengupdate pesanan' }, { status: 500, headers: corsHeaders })
   }
 }

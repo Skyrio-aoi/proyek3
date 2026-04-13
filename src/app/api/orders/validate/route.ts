@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { getOne, getAll, query } from '@/lib/db'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,132 +11,46 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders })
 }
 
-// POST /api/orders/validate - Validate ticket at gate
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { orderCode } = body
-
     if (!orderCode) {
-      return NextResponse.json(
-        { success: false, error: 'Order code is required' },
-        { status: 400, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Kode pesanan wajib diisi' }, { status: 400, headers: corsHeaders })
     }
 
-    const order = await db.order.findUnique({
-      where: { orderCode },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-            avatar: true,
-          },
-        },
-        orderItems: {
-          include: {
-            ticketType: true,
-          },
-        },
-      },
-    })
+    const order = await getOne(`
+      SELECT o.*, u.name as userName, u.email as userEmail, u.phone as userPhone
+      FROM \`Order\` o LEFT JOIN User u ON o.userId = u.id
+      WHERE o.orderCode = ?
+    `, [orderCode])
 
     if (!order) {
-      return NextResponse.json(
-        { success: false, error: 'Order not found', valid: false },
-        { status: 404, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Pesanan tidak ditemukan', valid: false }, { status: 404, headers: corsHeaders })
     }
 
-    // Already used
+    order.orderItems = await getAll(
+      'SELECT oi.*, tt.name as ticketTypeName FROM OrderItem oi LEFT JOIN TicketType tt ON oi.ticketTypeId = tt.id WHERE oi.orderId = ?',
+      [order.id]
+    )
+
     if (order.status === 'used') {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Ticket has already been used',
-          valid: false,
-          data: {
-            orderCode: order.orderCode,
-            status: order.status,
-            user: order.user,
-            orderItems: order.orderItems,
-            usedAt: order.updatedAt,
-          },
-        },
-        { status: 200, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Tiket sudah digunakan', valid: false, data: order }, { status: 200, headers: corsHeaders })
     }
-
-    // Cancelled or pending - cannot be validated
     if (order.status === 'cancelled') {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Ticket has been cancelled',
-          valid: false,
-          data: {
-            orderCode: order.orderCode,
-            status: order.status,
-          },
-        },
-        { status: 200, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Pesanan telah dibatalkan', valid: false, data: order }, { status: 200, headers: corsHeaders })
     }
-
     if (order.status === 'pending') {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Ticket has not been paid yet',
-          valid: false,
-          data: {
-            orderCode: order.orderCode,
-            status: order.status,
-          },
-        },
-        { status: 200, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Tiket belum dibayar', valid: false, data: order }, { status: 200, headers: corsHeaders })
     }
 
-    // Valid ticket (paid or confirmed) - mark as used
-    const updatedOrder = await db.order.update({
-      where: { id: order.id },
-      data: { status: 'used' },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-            avatar: true,
-          },
-        },
-        orderItems: {
-          include: {
-            ticketType: true,
-          },
-        },
-      },
-    })
+    // Valid (paid/confirmed) -> mark as used
+    await query('UPDATE \`Order\` SET status = ? WHERE id = ?', ['used', order.id])
+    order.status = 'used'
 
-    return NextResponse.json(
-      {
-        success: true,
-        valid: true,
-        message: 'Ticket validated successfully',
-        data: updatedOrder,
-      },
-      { status: 200, headers: corsHeaders }
-    )
-  } catch (error) {
-    console.error('Validate order error:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to validate ticket' },
-      { status: 500, headers: corsHeaders }
-    )
+    return NextResponse.json({ success: true, valid: true, message: 'Tiket berhasil divalidasi', data: order }, { status: 200, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Validate error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal validasi tiket' }, { status: 500, headers: corsHeaders })
   }
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { getOne, getAll, query } from '@/lib/db'
 import bcrypt from 'bcryptjs'
 
 const corsHeaders = {
@@ -15,145 +15,67 @@ export async function OPTIONS() {
 // POST /api/auth?action=register|login|profile
 export async function POST(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url)
-    const action = searchParams.get('action')
     const body = await request.json()
+    const { action, email, password, name, phone, userId } = body
 
-    // Profile action
+    // GET PROFILE
     if (action === 'profile') {
-      const { userId } = body
       if (!userId) {
-        return NextResponse.json(
-          { success: false, error: 'User ID is required' },
-          { status: 400, headers: corsHeaders }
-        )
+        return NextResponse.json({ success: false, error: 'User ID is required' }, { status: 400, headers: corsHeaders })
       }
-
-      const user = await db.user.findUnique({
-        where: { id: userId },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          phone: true,
-          role: true,
-          avatar: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      })
-
+      const user = await getOne(
+        'SELECT id, email, name, phone, role, avatar, createdAt, updatedAt FROM User WHERE id = ?',
+        [userId]
+      )
       if (!user) {
-        return NextResponse.json(
-          { success: false, error: 'User not found' },
-          { status: 404, headers: corsHeaders }
-        )
+        return NextResponse.json({ success: false, error: 'User not found' }, { status: 404, headers: corsHeaders })
       }
-
-      return NextResponse.json(
-        { success: true, data: user },
-        { status: 200, headers: corsHeaders }
-      )
-    }
-
-    // Main auth actions (no ?action query param)
-    const { action: bodyAction, email, password, name, phone } = body
-
-    if (!bodyAction) {
-      return NextResponse.json(
-        { success: false, error: 'Action is required (register or login)' },
-        { status: 400, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: true, data: user }, { status: 200, headers: corsHeaders })
     }
 
     // REGISTER
-    if (bodyAction === 'register') {
+    if (action === 'register') {
       if (!email || !password || !name) {
-        return NextResponse.json(
-          { success: false, error: 'Email, password, and name are required' },
-          { status: 400, headers: corsHeaders }
-        )
+        return NextResponse.json({ success: false, error: 'Email, password, dan nama wajib diisi' }, { status: 400, headers: corsHeaders })
       }
-
-      const existingUser = await db.user.findUnique({ where: { email } })
-      if (existingUser) {
-        return NextResponse.json(
-          { success: false, error: 'Email already registered' },
-          { status: 409, headers: corsHeaders }
-        )
+      const existing = await getOne('SELECT id FROM User WHERE email = ?', [email])
+      if (existing) {
+        return NextResponse.json({ success: false, error: 'Email sudah terdaftar' }, { status: 409, headers: corsHeaders })
       }
-
       const salt = await bcrypt.genSalt(10)
       const passwordHash = await bcrypt.hash(password, salt)
-
-      const user = await db.user.create({
-        data: {
-          email,
-          passwordHash,
-          name,
-          phone: phone || null,
-          role: 'visitor',
-        },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          phone: true,
-          role: true,
-          avatar: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      })
-
-      return NextResponse.json(
-        { success: true, data: user },
-        { status: 201, headers: corsHeaders }
+      const result = await query(
+        'INSERT INTO User (id, email, passwordHash, name, phone, role) VALUES (?, ?, ?, ?, ?, ?)',
+        [crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36), email, passwordHash, name, phone || null, 'visitor']
       )
+      const insertId = (result as any).insertId
+      const user = await getOne(
+        'SELECT id, email, name, phone, role, avatar, createdAt, updatedAt FROM User WHERE id = ?',
+        [insertId]
+      )
+      return NextResponse.json({ success: true, data: user }, { status: 201, headers: corsHeaders })
     }
 
     // LOGIN
-    if (bodyAction === 'login') {
+    if (action === 'login') {
       if (!email || !password) {
-        return NextResponse.json(
-          { success: false, error: 'Email and password are required' },
-          { status: 400, headers: corsHeaders }
-        )
+        return NextResponse.json({ success: false, error: 'Email dan password wajib diisi' }, { status: 400, headers: corsHeaders })
       }
-
-      const user = await db.user.findUnique({ where: { email } })
+      const user = await getOne('SELECT * FROM User WHERE email = ?', [email])
       if (!user) {
-        return NextResponse.json(
-          { success: false, error: 'Invalid email or password' },
-          { status: 401, headers: corsHeaders }
-        )
+        return NextResponse.json({ success: false, error: 'Email atau password salah' }, { status: 401, headers: corsHeaders })
       }
-
       const isValid = await bcrypt.compare(password, user.passwordHash)
       if (!isValid) {
-        return NextResponse.json(
-          { success: false, error: 'Invalid email or password' },
-          { status: 401, headers: corsHeaders }
-        )
+        return NextResponse.json({ success: false, error: 'Email atau password salah' }, { status: 401, headers: corsHeaders })
       }
-
       const { passwordHash: _, ...userWithoutPassword } = user
-
-      return NextResponse.json(
-        { success: true, data: userWithoutPassword },
-        { status: 200, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: true, data: userWithoutPassword }, { status: 200, headers: corsHeaders })
     }
 
-    return NextResponse.json(
-      { success: false, error: 'Invalid action. Use register, login, or profile.' },
-      { status: 400, headers: corsHeaders }
-    )
-  } catch (error) {
-    console.error('Auth error:', error)
-    return NextResponse.json(
-      { success: false, error: 'Internal server error' },
-      { status: 500, headers: corsHeaders }
-    )
+    return NextResponse.json({ success: false, error: 'Action tidak valid. Gunakan register, login, atau profile.' }, { status: 400, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Auth error:', error?.message || error)
+    return NextResponse.json({ success: false, error: 'Terjadi kesalahan server: ' + (error?.message || 'unknown') }, { status: 500, headers: corsHeaders })
   }
 }

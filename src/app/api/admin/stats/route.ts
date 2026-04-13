@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { getOne, getAll } from '@/lib/db'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -14,90 +14,74 @@ export async function OPTIONS() {
 export async function GET() {
   try {
     const now = new Date()
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const todayStr = now.toISOString().split('T')[0]
 
-    const totalVisitors = await db.user.count({
-      where: { role: 'visitor' },
-    })
+    const totalVisitors = await getOne('SELECT COUNT(*) as c FROM User WHERE role = ?', ['visitor'])
+    const totalRevenue = await getOne("SELECT COALESCE(SUM(totalAmount), 0) as c FROM `Order` WHERE status IN ('paid', 'confirmed', 'used')")
+    const totalOrders = await getOne('SELECT COUNT(*) as c FROM `Order`')
+    const todayVisitors = await getOne("SELECT COUNT(*) as c FROM User WHERE role = 'visitor' AND DATE(createdAt) = ?", [todayStr])
+    const todayRevenue = await getOne("SELECT COALESCE(SUM(totalAmount), 0) as c FROM `Order` WHERE status IN ('paid', 'confirmed', 'used') AND DATE(createdAt) = ?", [todayStr])
+    const todayOrders = await getOne("SELECT COUNT(*) as c FROM `Order` WHERE DATE(createdAt) = ?", [todayStr])
 
-    const revenueAgg = await db.order.aggregate({
-      where: { status: { in: ['paid', 'confirmed', 'used'] } },
-      _sum: { totalAmount: true },
-    })
-    const totalRevenue = revenueAgg._sum.totalAmount || 0
+    const recentOrders = await getAll(`
+      SELECT o.*, u.name as userName, u.email as userEmail
+      FROM \`Order\` o LEFT JOIN User u ON o.userId = u.id
+      ORDER BY o.createdAt DESC LIMIT 10
+    `)
+    for (const order of recentOrders) {
+      order.orderItems = await getAll(
+        'SELECT oi.*, tt.name as ticketTypeName, tt.price as ticketPrice, oi.subtotal FROM OrderItem oi LEFT JOIN TicketType tt ON oi.ticketTypeId = tt.id WHERE oi.orderId = ?',
+        [order.id]
+      )
+    }
 
-    const totalOrders = await db.order.count()
-
-    const todayVisitors = await db.user.count({
-      where: { role: 'visitor', createdAt: { gte: todayStart } },
-    })
-
-    const todayRevenueAgg = await db.order.aggregate({
-      where: { status: { in: ['paid', 'confirmed', 'used'] }, createdAt: { gte: todayStart } },
-      _sum: { totalAmount: true },
-    })
-    const todayRevenue = todayRevenueAgg._sum.totalAmount || 0
-
-    const todayOrders = await db.order.count({
-      where: { createdAt: { gte: todayStart } },
-    })
-
-    const recentOrders = await db.order.findMany({
-      take: 10,
-      orderBy: { createdAt: 'desc' },
-      include: {
-        user: { select: { id: true, name: true, email: true } },
-        orderItems: {
-          include: { ticketType: { select: { name: true } } },
-        },
-      },
-    })
-
-    const monthlyData: Array<{ month: string; revenue: number; orderCount: number; visitorCount: number }> = []
+    // Monthly data
+    const monthlyData = []
     for (let i = 5; i >= 0; i--) {
-      const monthDate = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999)
-      const monthLabel = monthDate.toLocaleString('en-US', { month: 'short', year: 'numeric' })
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+      const monthLabel = d.toLocaleString('en-US', { month: 'short', year: 'numeric' })
+      const monthStart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+      const endDate = new Date(d.getFullYear(), d.getMonth() + 1, 0)
+      const monthEnd = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`
 
-      const monthOrders = await db.order.findMany({
-        where: {
-          createdAt: { gte: monthDate, lte: monthEnd },
-          status: { in: ['paid', 'confirmed', 'used'] },
-        },
-        select: { totalAmount: true, userId: true },
-      })
-
-      const monthRevenue = monthOrders.reduce((sum, o) => sum + o.totalAmount, 0)
-      const uniqueVisitorIds = new Set(monthOrders.map(o => o.userId))
+      const monthRev = await getOne(
+        "SELECT COALESCE(SUM(totalAmount), 0) as c FROM `Order` WHERE status IN ('paid', 'confirmed', 'used') AND DATE(createdAt) >= ? AND DATE(createdAt) <= ?",
+        [monthStart, monthEnd]
+      )
+      const monthOrd = await getOne(
+        "SELECT COUNT(*) as c FROM `Order` WHERE status IN ('paid', 'confirmed', 'used') AND DATE(createdAt) >= ? AND DATE(createdAt) <= ?",
+        [monthStart, monthEnd]
+      )
+      const monthVis = await getOne(
+        "SELECT COUNT(DISTINCT userId) as c FROM `Order` WHERE status IN ('paid', 'confirmed', 'used') AND DATE(createdAt) >= ? AND DATE(createdAt) <= ?",
+        [monthStart, monthEnd]
+      )
 
       monthlyData.push({
         month: monthLabel,
-        revenue: monthRevenue,
-        orderCount: monthOrders.length,
-        visitorCount: uniqueVisitorIds.size,
+        revenue: monthRev?.c || 0,
+        orderCount: monthOrd?.c || 0,
+        visitorCount: monthVis?.c || 0,
       })
     }
 
-    const ordersByStatus = await db.order.groupBy({
-      by: ['status'],
-      _count: { id: true },
-    })
-
+    // Status breakdown
+    const statusRows = await getAll("SELECT status, COUNT(*) as count FROM `Order` GROUP BY status")
     const statusBreakdown: Record<string, number> = {}
-    for (const item of ordersByStatus) {
-      statusBreakdown[item.status] = item._count.id
+    for (const row of statusRows) {
+      statusBreakdown[row.status] = row.count
     }
 
     return NextResponse.json(
       {
         success: true,
         data: {
-          totalVisitors,
-          totalRevenue,
-          totalOrders,
-          todayVisitors,
-          todayRevenue,
-          todayOrders,
+          totalVisitors: totalVisitors?.c || 0,
+          totalRevenue: totalRevenue?.c || 0,
+          totalOrders: totalOrders?.c || 0,
+          todayVisitors: todayVisitors?.c || 0,
+          todayRevenue: todayRevenue?.c || 0,
+          todayOrders: todayOrders?.c || 0,
           recentOrders,
           monthlyData,
           statusBreakdown,
@@ -105,11 +89,8 @@ export async function GET() {
       },
       { status: 200, headers: corsHeaders }
     )
-  } catch (error) {
-    console.error('Admin stats error:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch dashboard statistics' },
-      { status: 500, headers: corsHeaders }
-    )
+  } catch (error: any) {
+    console.error('Admin stats error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal memuat statistik' }, { status: 500, headers: corsHeaders })
   }
 }

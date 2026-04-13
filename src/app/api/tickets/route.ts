@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { getAll, getOne, query } from '@/lib/db'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,111 +11,70 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders })
 }
 
-// GET /api/tickets - list active ticket types
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const includeInactive = searchParams.get('all') === 'true'
-
-    const where: Record<string, unknown> = {}
+    let sql = 'SELECT * FROM TicketType'
+    const params: unknown[] = []
     if (!includeInactive) {
-      where.isActive = true
+      sql += ' WHERE isActive = true'
     }
-
-    const ticketTypes = await db.ticketType.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-    })
-
-    return NextResponse.json(
-      { success: true, data: ticketTypes },
-      { status: 200, headers: corsHeaders }
-    )
-  } catch (error) {
-    console.error('Get tickets error:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch ticket types' },
-      { status: 500, headers: corsHeaders }
-    )
+    sql += ' ORDER BY price ASC'
+    const tickets = await getAll(sql, params)
+    return NextResponse.json({ success: true, data: tickets }, { status: 200, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Get tickets error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal mengambil data tiket' }, { status: 500, headers: corsHeaders })
   }
 }
 
-// POST /api/tickets - Create ticket type (admin)
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { name, description, price, isActive } = body
-
     if (!name || price === undefined || price === null) {
-      return NextResponse.json(
-        { success: false, error: 'Name and price are required' },
-        { status: 400, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Nama dan harga wajib diisi' }, { status: 400, headers: corsHeaders })
     }
-
-    const ticketType = await db.ticketType.create({
-      data: {
-        name,
-        description: description || null,
-        price: parseFloat(price),
-        isActive: isActive !== undefined ? isActive : true,
-      },
-    })
-
-    return NextResponse.json(
-      { success: true, data: ticketType },
-      { status: 201, headers: corsHeaders }
+    const id = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)
+    await query(
+      'INSERT INTO TicketType (id, name, description, price, isActive) VALUES (?, ?, ?, ?, ?)',
+      [id, name, description || null, parseFloat(price), isActive !== undefined ? isActive : true]
     )
-  } catch (error) {
-    console.error('Create ticket type error:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to create ticket type' },
-      { status: 500, headers: corsHeaders }
-    )
+    const ticket = await getOne('SELECT * FROM TicketType WHERE id = ?', [id])
+    return NextResponse.json({ success: true, data: ticket }, { status: 201, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Create ticket error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal membuat tipe tiket' }, { status: 500, headers: corsHeaders })
   }
 }
 
-// PUT /api/tickets - Update ticket type (admin)
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json()
-    const { id, ...fields } = body
-
+    const { id, name, description, price, isActive } = body
     if (!id) {
-      return NextResponse.json(
-        { success: false, error: 'Ticket type ID is required' },
-        { status: 400, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'ID tipe tiket wajib diisi' }, { status: 400, headers: corsHeaders })
     }
-
-    const existing = await db.ticketType.findUnique({ where: { id } })
+    const existing = await getOne('SELECT id FROM TicketType WHERE id = ?', [id])
     if (!existing) {
-      return NextResponse.json(
-        { success: false, error: 'Ticket type not found' },
-        { status: 404, headers: corsHeaders }
-      )
+      return NextResponse.json({ success: false, error: 'Tipe tiket tidak ditemukan' }, { status: 404, headers: corsHeaders })
     }
-
-    const updateData: Record<string, unknown> = {}
-    if (fields.name !== undefined) updateData.name = fields.name
-    if (fields.description !== undefined) updateData.description = fields.description
-    if (fields.price !== undefined) updateData.price = parseFloat(fields.price)
-    if (fields.isActive !== undefined) updateData.isActive = fields.isActive
-
-    const ticketType = await db.ticketType.update({
-      where: { id },
-      data: updateData,
-    })
-
-    return NextResponse.json(
-      { success: true, data: ticketType },
-      { status: 200, headers: corsHeaders }
-    )
-  } catch (error) {
-    console.error('Update ticket type error:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to update ticket type' },
-      { status: 500, headers: corsHeaders }
-    )
+    const fields: string[] = []
+    const params: unknown[] = []
+    if (name !== undefined) { fields.push('name = ?'); params.push(name) }
+    if (description !== undefined) { fields.push('description = ?'); params.push(description) }
+    if (price !== undefined) { fields.push('price = ?'); params.push(parseFloat(price)) }
+    if (isActive !== undefined) { fields.push('isActive = ?'); params.push(isActive ? 1 : 0) }
+    if (fields.length === 0) {
+      return NextResponse.json({ success: false, error: 'Tidak ada field untuk diupdate' }, { status: 400, headers: corsHeaders })
+    }
+    params.push(id)
+    await query(`UPDATE TicketType SET ${fields.join(', ')} WHERE id = ?`, params)
+    const ticket = await getOne('SELECT * FROM TicketType WHERE id = ?', [id])
+    return NextResponse.json({ success: true, data: ticket }, { status: 200, headers: corsHeaders })
+  } catch (error: any) {
+    console.error('Update ticket error:', error?.message)
+    return NextResponse.json({ success: false, error: 'Gagal mengupdate tipe tiket' }, { status: 500, headers: corsHeaders })
   }
 }
