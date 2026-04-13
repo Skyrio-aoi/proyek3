@@ -28,3 +28,27 @@ Stage Summary:
 - QR code ticket generation and validation
 - Professional emerald/green color theme, responsive design, no emoji
 - Database: MySQL on Aiven Cloud (defaultdb)
+
+---
+Task ID: 2
+Agent: Main Coordinator
+Task: Fix login error - database SSL connection and server stability
+
+Work Log:
+- Diagnosed login error "Terjadi kesalahan koneksi" - caused by dev server not running
+- Verified Aiven CA certificate exists at /home/z/my-project/certs/ca.pem (1541 bytes)
+- Verified db.ts correctly reads CA cert from certs/ca.pem using process.cwd()
+- Tested MySQL connection directly via node - connection works with SSL CA cert
+- Tested login API for all 3 accounts - ALL WORKING:
+  - admin@niceplayland.com / admin123 -> SUCCESS (role: admin)
+  - karyawan@niceplayland.com / employee123 -> SUCCESS (role: employee)
+  - pengunjung@email.com / visitor123 -> SUCCESS (role: visitor)
+- Tested /api/rides endpoint - returns 10 rides correctly
+- Confirmed dev server needs to be running for login to work
+- Root cause: dev server was not running when user attempted login, causing fetch() to throw network error
+
+Stage Summary:
+- Login API is fully functional - all 3 accounts verified
+- Database connection to Aiven MySQL works with SSL CA certificate
+- SSL config in db.ts: reads certs/ca.pem, falls back to rejectUnauthorized: false if missing
+- Server stability is critical - dev server must be running on port 3000 (Caddy proxies from port 81)
