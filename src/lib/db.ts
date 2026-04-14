@@ -8,15 +8,15 @@ function getPool(): mysql.Pool {
   if (pool) return pool
 
   const caPath = path.join(process.cwd(), 'certs', 'ca.pem')
-  let ssl: { ca: string } | { rejectUnauthorized: false }
+  let ssl: object
   
   try {
     const ca = fs.readFileSync(caPath, 'utf8')
     ssl = { ca }
-    console.log('[DB] Using Aiven CA certificate from', caPath)
+    console.log('[DB] Using Aiven CA certificate')
   } catch {
     ssl = { rejectUnauthorized: false }
-    console.log('[DB] CA cert not found, using rejectUnauthorized: false')
+    console.log('[DB] Using rejectUnauthorized: false')
   }
 
   const dbUrl = process.env.DATABASE_URL || ''
